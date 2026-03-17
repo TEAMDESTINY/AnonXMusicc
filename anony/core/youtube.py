@@ -1,11 +1,9 @@
 # Copyright (c) 2025 AnonymousX1025
 # Licensed under the MIT License.
-# This file is part of AnonXMusic
-
+# Modified for API based download (no cookies)
 
 import os
 import re
-import yt_dlp
 import random
 import asyncio
 import aiohttp
@@ -16,14 +14,12 @@ from py_yt import Playlist, VideosSearch
 from anony import logger
 from anony.helpers import Track, utils
 
+API_URL = "https://shrutibots.site"
+
 
 class YouTube:
     def __init__(self):
         self.base = "https://www.youtube.com/watch?v="
-        self.cookies = []
-        self.checked = False
-        self.cookie_dir = "anony/cookies"
-        self.warned = False
         self.regex = re.compile(
             r"(https?://)?(www\.|m\.|music\.)?"
             r"(youtube\.com/(watch\?v=|shorts/|playlist\?list=)|youtu\.be/)"
@@ -34,31 +30,6 @@ class YouTube:
             r"(?!/(watch\?v=[A-Za-z0-9_-]{11}|shorts/[A-Za-z0-9_-]{11}"
             r"|playlist\?list=PL[A-Za-z0-9_-]+|[A-Za-z0-9_-]{11}))\S*"
         )
-
-    def get_cookies(self):
-        if not self.checked:
-            for file in os.listdir(self.cookie_dir):
-                if file.endswith(".txt"):
-                    self.cookies.append(f"{self.cookie_dir}/{file}")
-            self.checked = True
-        if not self.cookies:
-            if not self.warned:
-                self.warned = True
-                logger.warning("Cookies are missing; downloads might fail.")
-            return None
-        return random.choice(self.cookies)
-
-    async def save_cookies(self, urls: list[str]) -> None:
-        logger.info("Saving cookies from urls...")
-        async with aiohttp.ClientSession() as session:
-            for url in urls:
-                name = url.split("/")[-1]
-                link = "https://batbin.me/raw/" + name
-                async with session.get(link) as resp:
-                    resp.raise_for_status()
-                    with open(f"{self.cookie_dir}/{name}.txt", "wb") as fw:
-                        fw.write(await resp.read())
-        logger.info(f"Cookies saved in {self.cookie_dir}.")
 
     def valid(self, url: str) -> bool:
         return bool(re.match(self.regex, url))
@@ -72,6 +43,7 @@ class YouTube:
             results = await _search.next()
         except Exception:
             return None
+
         if results and results["result"]:
             data = results["result"][0]
             return Track(
@@ -110,47 +82,77 @@ class YouTube:
             pass
         return tracks
 
+    async def _api_download(self, video_id: str, video: bool = False) -> str | None:
+        ext = "mp4" if video else "mp3"
+        file_path = f"downloads/{video_id}.{ext}"
+
+        os.makedirs("downloads", exist_ok=True)
+
+        if Path(file_path).exists():
+            return file_path
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                params = {
+                    "url": video_id,
+                    "type": "video" if video else "audio"
+                }
+
+                async with session.get(
+                    f"{API_URL}/download",
+                    params=params,
+                    timeout=aiohttp.ClientTimeout(total=7)
+                ) as resp:
+
+                    if resp.status != 200:
+                        return None
+
+                    data = await resp.json()
+                    token = data.get("download_token")
+
+                    if not token:
+                        return None
+
+                    stream_url = f"{API_URL}/stream/{video_id}?type={'video' if video else 'audio'}&token={token}"
+
+                    async with session.get(
+                        stream_url,
+                        timeout=aiohttp.ClientTimeout(total=300)
+                    ) as file_resp:
+
+                        if file_resp.status == 302:
+                            redirect = file_resp.headers.get("Location")
+                            if redirect:
+                                async with session.get(redirect) as final:
+                                    if final.status != 200:
+                                        return None
+
+                                    with open(file_path, "wb") as f:
+                                        async for chunk in final.content.iter_chunked(16384):
+                                            f.write(chunk)
+
+                        elif file_resp.status == 200:
+
+                            with open(file_path, "wb") as f:
+                                async for chunk in file_resp.content.iter_chunked(16384):
+                                    f.write(chunk)
+
+                        else:
+                            return None
+
+            if Path(file_path).exists() and os.path.getsize(file_path) > 0:
+                return file_path
+
+        except Exception as ex:
+            logger.warning("API download failed: %s", ex)
+
+        if Path(file_path).exists():
+            try:
+                os.remove(file_path)
+            except:
+                pass
+
+        return None
+
     async def download(self, video_id: str, video: bool = False) -> str | None:
-        url = self.base + video_id
-        ext = "mp4" if video else "webm"
-        filename = f"downloads/{video_id}.{ext}"
-
-        if Path(filename).exists():
-            return filename
-
-        cookie = self.get_cookies()
-        base_opts = {
-            "outtmpl": "downloads/%(id)s.%(ext)s",
-            "quiet": True,
-            "noplaylist": True,
-            "geo_bypass": True,
-            "no_warnings": True,
-            "overwrites": False,
-            "nocheckcertificate": True,
-            "cookiefile": cookie,
-        }
-
-        if video:
-            ydl_opts = {
-                **base_opts,
-                "format": "(bestvideo[height<=?720][width<=?1280][ext=mp4])+(bestaudio)",
-                "merge_output_format": "mp4",
-            }
-        else:
-            ydl_opts = {
-                **base_opts,
-                "format": "bestaudio[ext=webm][acodec=opus]",
-            }
-
-        def _download():
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                try:
-                    ydl.download([url])
-                except (yt_dlp.utils.DownloadError, yt_dlp.utils.ExtractorError):
-                    return None
-                except Exception as ex:
-                    logger.warning("Download failed: %s", ex)
-                    return None
-            return filename
-
-        return await asyncio.to_thread(_download)
+        return await self._api_download(video_id, video)
