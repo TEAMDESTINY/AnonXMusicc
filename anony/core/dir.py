@@ -2,7 +2,6 @@
 # Licensed under the MIT License.
 # This file is part of AnonXMusic
 
-
 import shutil
 from pathlib import Path
 
@@ -13,9 +12,16 @@ def ensure_dirs():
     """
     Ensure that the necessary directories exist.
     """
-    if not shutil.which("deno") or not shutil.which("ffmpeg"):
-        raise RuntimeError("Deno and FFmpeg must be installed and accessible in the system PATH.")
 
+    # Check optional dependencies
+    if not shutil.which("deno"):
+        logger.warning("Deno not found in PATH. Some features may not work.")
+
+    if not shutil.which("ffmpeg"):
+        logger.warning("FFmpeg not found in PATH. Some features may not work.")
+
+    # Ensure required directories exist
     for dir in ["cache", "downloads"]:
         Path(dir).mkdir(parents=True, exist_ok=True)
+
     logger.info("Cache directories updated.")
